@@ -1,0 +1,354 @@
+'''
+O'Meirrcy !!!! Download free ebooks from O'Reilly
+
+Usage:
+> git clone  https://gist.github.com/Krazybug/1ae50814d25b0a1d862dfdf7161ee503
+> mv 1ae50814d25b0a1d862dfdf7161ee503 omercy
+> cd omercy
+> pip install requests
+> pip install bs4
+> python omercy.py
+
+You will get 1 directory per book under the dir oreilly-free-ebooks containing:
+- 1 .json file with a small descrition (title, author, links to ebooks file, ...)
+- 1 cover file (jpg, jpe, gif, ...)
+- all files in the formats availables for the book (pdf, epub, mobi)
+... 
+Enjoy :)
+'''
+
+'''
+   DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE 
+                    Version 2, December 2004 
+
+ Copyright (C) 2004 Sam Hocevar <sam@hocevar.net> 
+
+ Everyone is permitted to copy and distribute verbatim or modified 
+ copies of this license document, and changing it is allowed as long 
+ as the name is changed. 
+
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE 
+   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION 
+
+  0. You just DO WHAT THE FUCK YOU WANT TO.
+'''
+
+import os
+import sys
+import shutil
+import json
+import mimetypes
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+from functools import reduce
+from tempfile import tempdir
+
+source = "http://www.oreilly.com/free/reports.html"
+extensions = ["epub", "pdf", "mobi"]
+# If you're not interested in some ebook format, just remove it there, for instance:
+# extensions = ["epub", "pdf"]
+
+print("-"*50)
+print("Grabbing from", source)
+print("-"*50)
+print()
+
+try:
+    req = requests.get(source)
+    req.raise_for_status()
+except:
+    print("Unable to open source url:", source)
+    sys.exit(1)
+home_s = BeautifulSoup(req.content, "html.parser")
+
+# Get description of the books
+topics = {}
+topics_s = home_s.find_all("section")
+for topic in topics_s:
+    topics[topic.attrs["id"]] = topic.find(class_="btn see-more").attrs["href"]
+# Extra "data" section
+topics["data1"] = "http://www.oreilly.com/data/free/archive.html"
+print("Topics:", ", ".join(topics.keys()))
+
+
+count_books = 0
+
+# Some books are not available for free (or without inscription ?)
+unreachable_files = [
+    "http://shop.oreilly.com/product/0636920022916.do",
+    "http://shop.oreilly.com/product/0636920025580.do",
+    "http://shop.oreilly.com/product/0636920026082.do",
+    "http://shop.oreilly.com/product/0636920033127.do?intcmp=il-web-free-product-lgen_webplatform",
+    "http://shop.oreilly.com/product/0636920039303.do?intcmp=il-web-free-product-lgen_ydkjs_upgoing"
+]
+
+# These files don't respect the rules and have to be handled explicitly
+explicit_files = {
+    "http://www.oreilly.com/free/css-secrets-collection?intcmp=il-web-free-product-lgen_css_secrets": {
+        "pdf": "http://cdn.oreillystatic.com/oreilly/pdfs/CSS_Secrets_sample-3.pdf"
+    },
+    "http://www.oreilly.com/free/transforms-in-css.csp?intcmp=il-web-free-product-lgen_csstransforms": {
+        "pdf": "http://www.oreilly.com/web-platform/free/files/Transforms_in_CSS.pdf",
+        "epub": "http://www.oreilly.com/web-platform/free/files/Transforms_in_CSS.epub",
+        "mobi": "http://www.oreilly.com/web-platform/free/files/Transforms_in_CSS.mobi"
+    },
+    "http://www.oreilly.com/data/free/data-and-finance.csp":
+    {
+        "pdf": "http://www.oreilly.com/data/free/files/data-money-regulation.pdf",
+        "epub": "http://www.oreilly.com/data/free/files/data-money-regulation.epub",
+        "mobi": "http://www.oreilly.com/data/free/files/data-money-regulation.mobi"
+    },
+    "http://www.oreilly.com/data/free/business-models-for-the-data-economy.csp?intcmp=il-data-free-lp-lgen_free_reports_page":
+    {
+        "pdf": "http://www.oreilly.com/data/free/files/business-models-for-data-economy.pdf",
+        "epub": "http://www.oreilly.com/data/free/files/business-models-for-data-economy.epub",
+        "mobi": "http://www.oreilly.com/data/free/files/business-models-for-data-economy.mobi"
+    },
+    "http://www.oreilly.com/data/free/data-analytics-in-sports.csp":
+    {
+        "pdf": "http://www.oreilly.com/data/free/files/Data_Analytics_in_Sports.pdf",
+        "epub": "http://www.oreilly.com/data/free/files/Data_Analytics_in_Sports.epub",
+        "mobi": "http://www.oreilly.com/data/free/files/Data_Analytics_in_Sports.mobi"
+    },
+    "http://www.oreilly.com/data/free/data-technology-future-of-play.csp?intcmp=il-data-free-lp-lgen_free_reports_page":
+    {
+        "pdf": "http://www.oreilly.com/data/free/files/data-technology-and-the-future-of-play.pdf",
+        "epub": "http://www.oreilly.com/data/free/files/data-technology-and-the-future-of-play.epub",
+        "mobi": "http://www.oreilly.com/data/free/files/data-technology-and-the-future-of-play.mobi"
+    }
+}
+
+prefix="oreilly-free-ebooks"
+
+for name, url in topics.items():
+    print()
+    print("-"*50)
+    print("Parsing topic:", name)
+    print()
+
+    try:
+        req = requests.get(url)
+        req.raise_for_status()
+    except:
+        print("Unable to open topic page:", url)
+        continue
+    topics_s = BeautifulSoup(req.content, "html.parser")
+
+    for book_s in topics_s.find_all(attrs={"data-toggle": "popover"}):
+        # Check if book description already exists
+        b_url = book_s.attrs["href"]
+
+        if b_url in unreachable_files:
+            print()
+            print("Unreachable file => ignored", b_url)
+            count_books += 1
+            print("-->", count_books, "Book description(s) considered")
+            continue
+
+        print()
+        print("Parsing book:", b_url)
+
+        filename = urlparse(b_url).path.replace(".csp", "").split('/')[-1]
+        filepath = prefix+"/"+filename+"/"+filename+".json"
+        print("Checking book information:", filepath)
+
+        if os.path.isfile(filepath):
+            print("Book information is already present...")
+            count_books = count_books+1
+            print("-->", count_books, "Book description(s)")
+        else:
+            # Get book description
+            print("No existing data => retrieving in file:", filepath)
+            book = {}
+            book["topic"] = name if name != "data1" else "data"
+            book["title"] = book_s.attrs["title"]
+            book["description"] = book_s.attrs["data-content"]
+            b_url = book_s.attrs["href"]
+            # Some books urls don't have "http:" prefix
+            b_url = b_url if b_url.startswith("http:") else "http:"+b_url
+            book["source"] = b_url
+            c_url = book_s.find("img").attrs["src"]
+            c_url = c_url if c_url.startswith("http:") else "http:"+c_url
+            book["cover"] = c_url
+            # Get extra information (author, author bio, isbn, ...)
+            try:
+                req = requests.get(b_url)
+                req.raise_for_status()
+            except:
+                print("Unable to open book extra informations page:", b_url)
+                continue
+            else:
+                ext_book_s = BeautifulSoup(req.content, "html.parser")
+                if not len(req.history):  # not redirected
+                    author = ext_book_s.find("h3", class_="author-name")
+                    if author:
+                        book["author"] = author.getText()
+                    author_bio = ext_book_s.find("div", class_="highlight")
+                    if author_bio:
+                        book["author_bio"] = author_bio.find("p").getText()
+                else:  # redirect on Safari ?
+                    author = ext_book_s.find("div", class_="t-authors")
+                    if author:
+                        book["author"] = author.getText().split("by ")[1]
+                    isbn = ext_book_s.find("div", class_="t-isbn")
+                    if isbn:
+                        book["isbn"] = isbn.get_text().split("ISBN: ")[1]
+
+            # files with explicit download urls are not explored
+            if b_url in explicit_files.keys():
+                for ext in extensions:
+                    if ext in explicit_files[b_url]:
+                        book[ext] = explicit_files[b_url][ext]
+            else:
+                # Outside of a navigator, download links are not displayed (javascript code)
+                # Books download url template is "http://www.oreilly.com/"+book["topic"]+"/free/files/"+filename+"?download=true"
+                # However, we can get the ebooks formats available to avoid useless domnloads (Error 404)
+                d_url = book["source"].split("?")[0]+"?download=true"
+                try:
+                    req = requests.get(d_url)
+                    req.raise_for_status()
+                except:
+                    print("Unable to open book download page", d_url)
+
+                # We handle books without any topic in their description url but with a topic in their download url
+                if book["source"].startswith("http://www.oreilly.com/free"):
+                    t = book["source"].split("?topic=")[-1]
+                    filebase = "http://www.oreilly.com/"+t+"/free/files/"+filename
+                # The nominal case
+                # filebase="http://www.oreilly.com/"+book["topic"]+"/free/files/"+filename
+                else:
+                    filebase = book["source"].split(
+                        filename)[0]+"files/"+filename
+
+                download_s = BeautifulSoup(req.content, "html.parser")
+                c_formats = 0
+                for ext in extensions:
+                    if download_s.find("a", class_="btn "+ext):
+                        book[ext] = filebase+"."+ext
+                        c_formats = c_formats+1
+                # When the description page is redirected on Safari, the formats aren't displayed,
+                # we have to try to download each of them
+                if not c_formats:
+                    print("No format directly available", d_url)
+                    for ext in extensions:
+                        book[ext] = filebase+"."+ext
+            # Persists json data
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, 'w') as fd:
+                json.dump(book, fd)
+            print("Book description(s) retrieved:", b_url)
+
+            count_books += 1
+            print("-->", count_books, "Book description(s) considered")
+
+# Get covers
+print()
+print("-"*50)
+print("Retrieving covers")
+
+for path, dirs, files in os.walk(prefix):
+    for dir in dirs:
+        print()
+        filebase = path+"/"+dir+"/"+dir
+        print(filebase)
+        jsonfile = filebase+".json"
+        try:
+            book = json.load(open(jsonfile))
+        except:
+            print("Unable to get information:", jsonfile)
+            continue
+
+        cover_u = book["cover"]
+        print("Retrieving", cover_u)
+
+        try:
+            req = requests.get(cover_u)
+            req.raise_for_status()
+        except:
+            print("Unable to retrieve cover:", cover_u)
+        else:
+            content_type = req.headers['content-type']
+            ext = mimetypes.guess_extension(content_type)
+            filename = path+"/"+dir+"/cover"+ext
+            if os.path.isfile(filename):
+                print(filename, "already exists...")
+            else:
+                with open(filename+".tmp", 'wb') as fd:
+                    fd.write(req.content)
+                shutil.move(filename+".tmp", filename)
+                print(filename, "retrieved...")
+
+# Get books
+count_files = 0
+for ext in extensions:
+    print()
+    print("-"*50)
+    print("Retrieving books:", ext)
+
+    for path, dirs, files in os.walk(prefix):
+        for dir in dirs:
+            print()
+            filebase = path+"/"+dir+"/"+dir
+            print(filebase)
+
+            jsonfile = filebase+".json"
+            try:
+                book = json.load(open(jsonfile))
+            except:
+                print("Unable to get information:", jsonfile)
+                continue
+
+            filename = filebase+"."+ext
+            if os.path.isfile(filename):
+                print(filename, "already exists...")
+                count_files = count_files+1
+                print("-->", count_files, "file(s) considered")
+            else:
+                if not ext in book:
+                    continue
+                book_u = book[ext]
+                print("Retrieving", book_u)
+                # assuming that the "content-type" is correct
+                try:
+                    req = requests.get(book_u)
+                    req.raise_for_status()
+                except requests.exceptions.HTTPError as err:
+                    print("Unable to retrieve file:", book_u)
+                    print("source=", book["source"])
+                    print("Http Error:", err)
+                    book.pop(ext)
+                    with open(filebase+".json", 'w') as fd:
+                        json.dump(book, fd)
+                        print("Book description(s) updated:", book_u)
+                except:
+                    print("Unexpected error:", book_u)
+                else:
+                    with open(filename+".tmp", 'wb') as fd:
+                        fd.write(req.content)
+                    shutil.move(filename+".tmp", filename)
+                    print(filename, "retrieved...")
+
+                    count_files = count_files+1
+                    print("-->", count_files, "file(s) considered")
+
+# Summary of operations
+count_books = count_files = 0
+count_formats = {}
+for ext in extensions:
+    count_formats[ext] = 0
+for path, dirs, files in os.walk(prefix):
+    for dir in dirs:
+        count_books += 1
+        filebase = path+"/"+dir+"/"+dir
+        for ext in extensions:
+            if os.path.isfile(filebase+"."+ext):
+                count_formats[ext] += 1
+count_files = reduce(lambda a, b: a + b, count_formats.values())
+
+print()
+print("--------> Total books count:", count_books)
+print("----------> Total files count:", count_files)
+for ext in extensions:
+    print(
+        "--------------> Total {0} files count: {1}".format(ext, count_formats[ext]))
